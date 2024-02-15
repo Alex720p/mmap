@@ -1,6 +1,6 @@
 #include "mmap.hpp"
 
-std::uintptr_t mmap::map_dll(const char* process, const char* dll) {
+std::uintptr_t mmap::map_dll(const char* process, const char* dll, int print_pad) {
 	std::ifstream file(dll, std::ios_base::binary);
 
 	if (!file.is_open())
@@ -23,7 +23,10 @@ std::uintptr_t mmap::map_dll(const char* process, const char* dll) {
 	if (!base)
 		return false;
 
-	std::printf("[+] Dll Base: 0x%llx \n", base);
+	std::string print_padding = std::string(print_pad, ' ');
+
+	std::printf("\n%sMapping: %s \n", print_padding.c_str(), dll);
+	std::printf("%s[+] Dll Base: 0x%llx \n", print_padding.c_str(), base);
 	try {
 		std::unique_ptr<char[]> image = std::make_unique<char[]>(pe_header->OptionalHeader.SizeOfImage); //will do all the base reloc etc in curr process memory and write it at once into target
 		std::size_t image_delta = base - pe_header->OptionalHeader.ImageBase;
@@ -35,24 +38,27 @@ std::uintptr_t mmap::map_dll(const char* process, const char* dll) {
 			std::size_t section_size_memory = section_header[i].Misc.VirtualSize;
 
 			std::uintptr_t dest = memory.virtual_alloc_ex(base + section_rva, section_size_memory, MEM_COMMIT, PAGE_READWRITE);
+			if (!dest)
+				throw std::runtime_error("Something went wrong when trying to allocate memory for the dll");
+
 			std::memcpy(image.get() + section_rva, buffer.get() + section_header[i].PointerToRawData, section_size_disk);
 		}
 
 
 		this->fix_relocations(image.get(), base, pe_header, section_header, image_delta);
-		std::printf("[+] Fixed relocations \n");
+		std::printf("%s[+] Fixed relocations \n", print_padding.c_str());
 
-		this->resolve_imports(image.get(), base, pe_header, section_header);
-		std::printf("[+] Fixed relocations \n");
+		this->resolve_imports(process, image.get(), base, pe_header, section_header, print_pad);
+		std::printf("%s[+] Fixed imports \n", print_padding.c_str());
 
 		this->write_buffer_to_target_process(image.get(), base, pe_header, section_header);
-		std::printf("[+] Dll written into target process memory \n");
+		std::printf("%s[+] Dll written into target process memory \n", print_padding.c_str());
 
 		this->call_tls_callbacks(image.get(), base, pe_header, section_header, image_delta);
-		std::printf("[+] Called DLL_PROCESS_ATTACH TLS callbacks \n");
+		std::printf("%s[+] Called DLL_PROCESS_ATTACH TLS callbacks (if there were any)\n", print_padding.c_str());
 
 		this->call_dll_main(image.get(), base, pe_header, section_header);
-		std::printf("[+] Called Dll Main into target process \n");
+		std::printf("%s[+] Called Dll Main into target process \n\n", print_padding.c_str());
 
 		return base;
 	}
@@ -102,7 +108,7 @@ bool mmap::fix_relocations(char* image, std::uintptr_t base, IMAGE_NT_HEADERS* p
 	return true;
 }
 
-bool mmap::resolve_imports(char* image, std::uintptr_t base, IMAGE_NT_HEADERS* pe_header, IMAGE_SECTION_HEADER* section_header) {
+bool mmap::resolve_imports(const char* process, char* image, std::uintptr_t base, IMAGE_NT_HEADERS* pe_header, IMAGE_SECTION_HEADER* section_header, int print_pad) {
 	IMAGE_DATA_DIRECTORY import_dir = pe_header->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
 	IMAGE_DATA_DIRECTORY bound_image_dir = pe_header->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT];
 
@@ -124,46 +130,13 @@ bool mmap::resolve_imports(char* image, std::uintptr_t base, IMAGE_NT_HEADERS* p
 			if (!GetModuleFileNameA(fn_module_local, dependency_file_path.get(), MAX_PATH))
 				throw std::runtime_error("Failed to get import dependency path for" + module_name);
 
-			fn_module_target = reinterpret_cast<HMODULE>(this->map_dll("notepad++.dll", dependency_file_path.get())); //todo: change to correct app name
-
-			/*if (!strstr(dependency_file_path.get(), WINDOWS_DLL_START_PATH)) //manual mapping some officials windows dll causes an access violation, until I figure it out this will have to do
-				fn_module_target = reinterpret_cast<HMODULE>(this->map_dll("notepad++.dll", dependency_file_path.get()));
-			else {
-				// Shellcode:
-				//mov rcx, <ptr to module name str>
-				//mov rax, <LoadLibA addr>
-				//call rax
-				
-
-				BYTE shellcode[] = {0x48, 0xB9, 0xEF, 0xBE, 0xAD, 0xDE, 0xEF, 0xBE, 0xAD, 0xDE, 0x48, 0xB8, 0xEF, 0xBE, 0xAD, 0xDE, 0xEF, 0xBE, 0xAD, 0xDE, 0xFF, 0xD0};
-				std::uintptr_t dll_name_base = memory.find_codecave(0, UINT64_MAX, lstrlenA(module_name_ptr) + 1, PAGE_READWRITE);
-				if (!dll_name_base)
-					throw std::runtime_error("Failed to find a codecave");
-
-				std::uintptr_t loadLibrary_address = reinterpret_cast<std::uintptr_t>(GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA"));
-
-				std::memcpy(&shellcode[2], &dll_name_base, sizeof(std::uintptr_t)); //copy module name addr into shellcode
-				std::memcpy(&shellcode[12], &loadLibrary_address, sizeof(std::uintptr_t)); //copy LoadLibrary func address
-
-				if (!memory.write_memory_with_size(dll_name_base, (void*)module_name_ptr, lstrlenA(module_name_ptr) + 1)) //probably doing something very ugly here with the (void*) cast but it works :)
-					throw std::runtime_error("Something went wrong writing to process memory");
-
-				if (!memory.hijack_thread_and_execute_shellcode(shellcode, sizeof(shellcode)))
-					throw std::runtime_error("Failed to import dll dependencies into target process");
-
-				memory.zero_out_memory(dll_name_base, lstrlenA(module_name_ptr));
-
-				while (!fn_module_target) {
-					fn_module_target = memory.get_module(module_name_wide).hModule;
-					Sleep(10);
-				}
-			}		*/
+			fn_module_target = reinterpret_cast<HMODULE>(this->map_dll(process, dependency_file_path.get(), print_pad + 3));
 		}
 
 		if (!fn_module_target || !fn_module_local)
 			throw std::runtime_error("Failed to get import dependency " + module_name + " base address");
 
-		std::uintptr_t fn_module_delta = reinterpret_cast<std::uintptr_t>(fn_module_target) - reinterpret_cast<std::uintptr_t>(fn_module_local);
+		std::size_t fn_module_delta = reinterpret_cast<std::size_t>(fn_module_target) - reinterpret_cast<std::size_t>(fn_module_local);
 
 		IMAGE_THUNK_DATA* import_lookup_table = reinterpret_cast<IMAGE_THUNK_DATA*>(image + import_descriptor->OriginalFirstThunk);
 		IMAGE_THUNK_DATA* import_address_table = reinterpret_cast<IMAGE_THUNK_DATA*>(image + import_descriptor->FirstThunk);
@@ -241,7 +214,6 @@ bool mmap::write_buffer_to_target_process(char* image, std::uintptr_t base, IMAG
 }
 
 //https://legend.octopuslabs.io/archives/2418/2418.htm
-//IMPORTANT: we need the untouched buffer here (the one where no base relocs have been done)
 bool mmap::call_tls_callbacks(char* image, std::uintptr_t base, IMAGE_NT_HEADERS* pe_header, IMAGE_SECTION_HEADER* section_header, std::size_t image_delta) {
 	//calling tls callbacks
 	IMAGE_DATA_DIRECTORY tls_dir_entry = pe_header->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
