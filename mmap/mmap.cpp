@@ -1,6 +1,6 @@
 #include "mmap.hpp"
 
-std::uintptr_t mmap::map_dll(const char* process, const char* dll, int print_pad) {
+std::uintptr_t Mmap::map_dll(const char* process, const char* dll, int print_pad) {
 	std::ifstream file(dll, std::ios_base::binary);
 
 	if (!file.is_open())
@@ -76,7 +76,7 @@ std::uintptr_t mmap::map_dll(const char* process, const char* dll, int print_pad
 
 }
 
-bool mmap::fix_relocations(char* image, std::uintptr_t base, IMAGE_NT_HEADERS* pe_header, IMAGE_SECTION_HEADER* section_header, std::size_t image_delta) {
+bool Mmap::fix_relocations(char* image, std::uintptr_t base, IMAGE_NT_HEADERS* pe_header, IMAGE_SECTION_HEADER* section_header, std::size_t image_delta) {
 	IMAGE_DATA_DIRECTORY base_reloc_dir = pe_header->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
 	std::size_t offset_to_block_start = 0;
 
@@ -95,9 +95,9 @@ bool mmap::fix_relocations(char* image, std::uintptr_t base, IMAGE_NT_HEADERS* p
 			if (relocation_type == IMAGE_REL_BASED_ABSOLUTE)
 				continue; //padding, we skip
 			else if (relocation_type == IMAGE_REL_BASED_HIGHLOW)
-				*reinterpret_cast<uint32_t*>(page + offset) += (image_delta & UINT32_MAX);
+				*reinterpret_cast<uint32_t*>(page + offset) += (image_delta & UINT32_MAX); //note: the mask here is probably useless since it should only be used for 32bit apps (although I haven't seen it written so I'll leave it like this)
 			else if (relocation_type == IMAGE_REL_BASED_DIR64)
-				*reinterpret_cast<uint64_t*>(page + offset) += image_delta;
+				*reinterpret_cast<uint64_t*>(page + offset) += image_delta; //this should be the only relocation type we should get (for x64 dlls)
 			else
 				throw std::runtime_error("Unsupported relocation type");
 		}
@@ -108,7 +108,7 @@ bool mmap::fix_relocations(char* image, std::uintptr_t base, IMAGE_NT_HEADERS* p
 	return true;
 }
 
-bool mmap::resolve_imports(const char* process, char* image, std::uintptr_t base, IMAGE_NT_HEADERS* pe_header, IMAGE_SECTION_HEADER* section_header, int print_pad) {
+bool Mmap::resolve_imports(const char* process, char* image, std::uintptr_t base, IMAGE_NT_HEADERS* pe_header, IMAGE_SECTION_HEADER* section_header, int print_pad) {
 	IMAGE_DATA_DIRECTORY import_dir = pe_header->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
 	IMAGE_DATA_DIRECTORY bound_image_dir = pe_header->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT];
 
@@ -173,7 +173,7 @@ bool mmap::resolve_imports(const char* process, char* image, std::uintptr_t base
 	return true;
 }
 
-bool mmap::write_buffer_to_target_process(char* image, std::uintptr_t base, IMAGE_NT_HEADERS* pe_header, IMAGE_SECTION_HEADER* section_header) {
+bool Mmap::write_buffer_to_target_process(char* image, std::uintptr_t base, IMAGE_NT_HEADERS* pe_header, IMAGE_SECTION_HEADER* section_header) {
 	//writing image buffer into target memory
 	for (std::size_t i = 0; i < pe_header->FileHeader.NumberOfSections; i++) {
 		if (!lstrcmpA(reinterpret_cast<LPCSTR>(section_header[i].Name), ".reloc"))
@@ -214,7 +214,7 @@ bool mmap::write_buffer_to_target_process(char* image, std::uintptr_t base, IMAG
 }
 
 //https://legend.octopuslabs.io/archives/2418/2418.htm
-bool mmap::call_tls_callbacks(char* image, std::uintptr_t base, IMAGE_NT_HEADERS* pe_header, IMAGE_SECTION_HEADER* section_header, std::size_t image_delta) {
+bool Mmap::call_tls_callbacks(char* image, std::uintptr_t base, IMAGE_NT_HEADERS* pe_header, IMAGE_SECTION_HEADER* section_header, std::size_t image_delta) {
 	//calling tls callbacks
 	IMAGE_DATA_DIRECTORY tls_dir_entry = pe_header->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
 
@@ -246,7 +246,7 @@ bool mmap::call_tls_callbacks(char* image, std::uintptr_t base, IMAGE_NT_HEADERS
 
 }
 
-bool mmap::call_dll_main(char* image, std::uintptr_t base, IMAGE_NT_HEADERS* pe_header, IMAGE_SECTION_HEADER* section_header) {
+bool Mmap::call_dll_main(char* image, std::uintptr_t base, IMAGE_NT_HEADERS* pe_header, IMAGE_SECTION_HEADER* section_header) {
 	/* Shellcode:
 		movq rcx, <HMODULE of dll> ; HMODULE of dll
 		movq rdx, 0x1 ; fdwReason DLL_PROCESS_ATTACH

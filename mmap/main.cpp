@@ -2,12 +2,14 @@
 #include <iostream>
 #include "mmap.hpp"
 
-int main()
+int main(int argc, char* argv[])
 {
-    mmap mapper;
-    //C:\\Windows\\SYSTEM32\\VCRUNTIME140.dll
-    mapper.map_dll("notepad++.exe", "message_box_tls_SHORT.dll");
-    //mapper.map_dll("notepad++.exe", "C:\\Windows\\SYSTEM32\\VCRUNTIME140.dll");
-    std::cout << "mapped :)" << std::endl;
+    if (argc != 3) {
+        std::cout << "invalid number of paramaters" << std::endl;
+    }
+    else {
+        Mmap mapper;
+        mapper.map_dll(argv[1], argv[2]);
+    }
 }
 

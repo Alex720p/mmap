@@ -192,9 +192,17 @@ bool Memory::hijack_thread_and_execute_shellcode(BYTE* shellcode, std::size_t sh
 
 
 	std::size_t complete_shellcode_size = sizeof(start_restore_orig_state) + shellcode_size + sizeof(end_restore_orig_state);
-	std::uintptr_t codecave = this->find_codecave(0, UINT64_MAX, complete_shellcode_size, PAGE_EXECUTE_READWRITE);
-	if (!codecave)
-		return false;
+
+	//we'll first check for a codecave, if it doesn't exists we create a page ourself
+	std::uintptr_t shellcode_address_target = this->find_codecave(0, UINT64_MAX, complete_shellcode_size, PAGE_EXECUTE_READWRITE);
+	bool allocated = false;
+	if (!shellcode_address_target) {
+		shellcode_address_target = this->virtual_alloc_ex(NULL, complete_shellcode_size, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+		if (!shellcode_address_target)
+			return 0;
+		else
+			allocated = true;
+	}
 
 	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, this->m_proc_id);
 	if (!IS_HANDLE_VALID(snapshot))
@@ -217,21 +225,20 @@ bool Memory::hijack_thread_and_execute_shellcode(BYTE* shellcode, std::size_t sh
 				CONTEXT context = { 0 };
 				context.ContextFlags = CONTEXT_FULL;
 				if (GetThreadContext(thread, &context)) {
-					std::memcpy(&end_restore_orig_state[2], &codecave, sizeof(std::uintptr_t)); //where the FLAG_HIJACK_THREAD_FINISHED will be set 
+					std::memcpy(&end_restore_orig_state[2], &shellcode_address_target, sizeof(std::uintptr_t)); //where the FLAG_HIJACK_THREAD_FINISHED will be set 
 					std::memcpy(&end_restore_orig_state[42], &context.Rip, sizeof(std::uintptr_t)); //copy the old eip into 'restore' shellcode
-					context.Rip = codecave;
+					context.Rip = shellcode_address_target;
 
 					std::unique_ptr<BYTE[]> complete_shellcode = std::make_unique<BYTE[]>(complete_shellcode_size);
 					std::memcpy(complete_shellcode.get(), start_restore_orig_state, sizeof(start_restore_orig_state));
 					std::memcpy(&complete_shellcode[sizeof(start_restore_orig_state)], shellcode, shellcode_size);
 					std::memcpy(&complete_shellcode[sizeof(start_restore_orig_state) + shellcode_size], end_restore_orig_state, sizeof(end_restore_orig_state));
-					if (this->write_memory_with_size(codecave, complete_shellcode.get(), complete_shellcode_size)) {
+					if (this->write_memory_with_size(shellcode_address_target, complete_shellcode.get(), complete_shellcode_size)) {
 						SetThreadContext(thread, &context);
 						ResumeThread(thread);
-						while (this->read_memory<BYTE>(codecave) != FLAG_HIJACK_THREAD_FINISHED)
+						while (this->read_memory<BYTE>(shellcode_address_target) != FLAG_HIJACK_THREAD_FINISHED)
 							Utils::sleep(10);
 
-						this->zero_out_memory(codecave, complete_shellcode_size);
 						success = true;
 					}
 					else {
@@ -245,6 +252,12 @@ bool Memory::hijack_thread_and_execute_shellcode(BYTE* shellcode, std::size_t sh
 			break;
 	} while (Thread32Next(snapshot, &thread_entry));
 
+	if (!allocated)
+		this->zero_out_memory(shellcode_address_target, complete_shellcode_size);
+	else
+		this->virtual_free_ex(shellcode_address_target, MEM_RELEASE);
+
 	CloseHandle(snapshot);
+
 	return success;
 }

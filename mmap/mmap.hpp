@@ -2,9 +2,8 @@
 #include "memory.hpp"
 #include <fstream>
 
-#define WINDOWS_DLL_START_PATH "C:\\Windows\\SYSTEM32\\"
 
-class mmap {
+class Mmap {
 private:
 	Memory memory;
 
