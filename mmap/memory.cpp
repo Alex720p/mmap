@@ -143,7 +143,7 @@ bool Memory::hijack_thread_and_execute_shellcode(BYTE* shellcode, std::size_t sh
 		throw std::runtime_error("No valid handle");
 
 	/*
-		start_restore: //TODO: store xmm regs
+		start_restore: //TODO: store xmm regs IMPORTANT
 		pushfq	; push flags on stack
 		push rax ; push all caller saved registers
 		push rdi
